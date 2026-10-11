@@ -12,6 +12,14 @@ class AuthRemoteDataSource implements AuthRepository {
   final Dio _dio;
   final TokenStorage _tokenStorage;
 
+  /// Unwraps `{"data": {...}}` envelope.
+  Map<String, dynamic> _data(dynamic body) {
+    if (body is Map && body['data'] is Map) {
+      return body['data'] as Map<String, dynamic>;
+    }
+    return body as Map<String, dynamic>;
+  }
+
   @override
   Future<UserProfile> login({
     required String email,
@@ -19,16 +27,17 @@ class AuthRemoteDataSource implements AuthRepository {
   }) async {
     try {
       final response = await _dio.post<Map<String, dynamic>>(
-        '/api/auth/login',
+        'auth/login',
         data: {'email': email, 'password': password},
       );
-      final data = response.data!;
-      final token = data['token']?.toString() ?? data['access_token']?.toString();
+      final data = _data(response.data);
+      final token = data['token']?.toString();
       if (token == null || token.isEmpty) {
         throw const UnknownException('Token tidak ditemukan dalam respons.');
       }
       await _tokenStorage.write(token);
-      return UserProfile.fromJson(data['user'] as Map<String, dynamic>? ?? data);
+      final userJson = data['user'] as Map<String, dynamic>? ?? data;
+      return UserProfile.fromJson(userJson);
     } on DioException catch (e) {
       throw dioToAppException(e);
     }
@@ -43,7 +52,7 @@ class AuthRemoteDataSource implements AuthRepository {
   }) async {
     try {
       final response = await _dio.post<Map<String, dynamic>>(
-        '/api/auth/register',
+        'auth/register',
         data: {
           'name': name,
           'email': email,
@@ -51,13 +60,14 @@ class AuthRemoteDataSource implements AuthRepository {
           'password_confirmation': passwordConfirmation,
         },
       );
-      final data = response.data!;
-      final token = data['token']?.toString() ?? data['access_token']?.toString();
+      final data = _data(response.data);
+      final token = data['token']?.toString();
       if (token == null || token.isEmpty) {
         throw const UnknownException('Token tidak ditemukan dalam respons.');
       }
       await _tokenStorage.write(token);
-      return UserProfile.fromJson(data['user'] as Map<String, dynamic>? ?? data);
+      final userJson = data['user'] as Map<String, dynamic>? ?? data;
+      return UserProfile.fromJson(userJson);
     } on DioException catch (e) {
       throw dioToAppException(e);
     }
@@ -66,7 +76,7 @@ class AuthRemoteDataSource implements AuthRepository {
   @override
   Future<void> logout() async {
     try {
-      await _dio.post<void>('/api/auth/logout');
+      await _dio.post<void>('auth/logout');
     } on DioException catch (e) {
       // Ignore 401 on logout — token may already be invalid.
       if (e.response?.statusCode != 401) rethrow;
@@ -78,8 +88,9 @@ class AuthRemoteDataSource implements AuthRepository {
   @override
   Future<UserProfile?> getMe() async {
     try {
-      final response = await _dio.get<Map<String, dynamic>>('/api/me');
-      return UserProfile.fromJson(response.data!);
+      final response = await _dio.get<Map<String, dynamic>>('auth/me');
+      final data = _data(response.data);
+      return UserProfile.fromJson(data);
     } on DioException catch (e) {
       if (e.response?.statusCode == 401) return null;
       throw dioToAppException(e);

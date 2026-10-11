@@ -37,6 +37,9 @@ dependencies:
   # Equatable for value objects
   equatable: ^2.0.5
 
+  # MIME type parsing for multipart upload
+  http_parser: ^4.0.2
+
   # JSON serialization runtime
   json_annotation: ^4.9.0
 

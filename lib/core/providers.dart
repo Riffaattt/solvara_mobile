@@ -5,8 +5,16 @@ import 'package:hackathon_salvara/core/network/dio_client.dart';
 import 'package:hackathon_salvara/core/storage/token_storage.dart';
 
 /// Provides the [FlutterSecureStorage] singleton.
+///
+/// resetOnError: true — if the keystore is corrupted or inaccessible (common
+/// on some vivo/OPPO/Xiaomi devices), the storage resets instead of hanging.
 final secureStorageProvider = Provider<FlutterSecureStorage>(
-  (_) => const FlutterSecureStorage(),
+  (_) => const FlutterSecureStorage(
+    aOptions: AndroidOptions(
+      encryptedSharedPreferences: true,
+      resetOnError: true,
+    ),
+  ),
 );
 
 /// Provides the [TokenStorage] wrapper.

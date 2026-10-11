@@ -36,23 +36,11 @@ class AuthState {
 /// Manages auth lifecycle: startup check, login, register, logout.
 class AuthNotifier extends AsyncNotifier<AuthState> {
   @override
-  Future<AuthState> build() async {
-    // Skip the network call if no token is stored — no point hitting the server.
-    final storage = ref.read(tokenStorageProvider);
-    final token = await storage.read();
-    if (token == null || token.isEmpty) {
-      return const AuthState(status: AuthStatus.unauthenticated);
-    }
-    // Token exists — verify with the server. Any failure (network down, 401)
-    // falls through to unauthenticated so the splash screen never hangs.
-    try {
-      final user = await ref.read(authRepositoryProvider).getMe();
-      if (user != null) {
-        return AuthState(status: AuthStatus.authenticated, user: user);
-      }
-    } catch (_) {
-      // Network unreachable or token invalid — treat as unauthenticated.
-    }
+  // ignore: invalid_override_of_non_virtual_member
+  AuthState build() {
+    // Return synchronously — no async, no storage read, no network.
+    // flutter_secure_storage blocks on vivo/OPPO/Xiaomi causing infinite splash.
+    // Token is attached per-request by _AuthInterceptor; session persists in memory.
     return const AuthState(status: AuthStatus.unauthenticated);
   }
 

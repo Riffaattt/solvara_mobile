@@ -6,7 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 import 'package:hackathon_salvara/app/router.dart';
 import 'package:hackathon_salvara/core/errors/app_exception.dart';
-import 'package:hackathon_salvara/features/reports/domain/report.dart';
+import 'package:hackathon_salvara/features/reports/domain/category.dart';
 import 'package:hackathon_salvara/features/reports/report_providers.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -19,19 +19,28 @@ class CreateReportScreen extends ConsumerStatefulWidget {
 
 class _CreateReportScreenState extends ConsumerState<CreateReportScreen> {
   final _formKey = GlobalKey<FormState>();
+  final _titleCtrl = TextEditingController();
   final _descCtrl = TextEditingController();
   final _latCtrl = TextEditingController();
   final _lngCtrl = TextEditingController();
   final _addressCtrl = TextEditingController();
 
-  ReportCategory _category = ReportCategory.other;
+  Category? _selectedCategory;
   XFile? _photo;
   bool _locationLoading = false;
   bool _submitting = false;
   String? _errorMessage;
 
   @override
+  void initState() {
+    super.initState();
+    // Auto-detect location when the screen opens.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _detectLocation());
+  }
+
+  @override
   void dispose() {
+    _titleCtrl.dispose();
     _descCtrl.dispose();
     _latCtrl.dispose();
     _lngCtrl.dispose();
@@ -41,7 +50,8 @@ class _CreateReportScreenState extends ConsumerState<CreateReportScreen> {
 
   Future<void> _pickPhoto(ImageSource source) async {
     final picker = ImagePicker();
-    final picked = await picker.pickImage(source: source, imageQuality: 80);
+    // Compress to keep upload under PHP post_max_size limit.
+    final picked = await picker.pickImage(source: source, imageQuality: 60, maxWidth: 1920);
     if (picked != null) setState(() => _photo = picked);
   }
 
@@ -85,6 +95,10 @@ class _CreateReportScreenState extends ConsumerState<CreateReportScreen> {
 
   Future<void> _submit() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
+    if (_selectedCategory == null) {
+      setState(() => _errorMessage = 'Pilih kategori terlebih dahulu.');
+      return;
+    }
 
     setState(() {
       _submitting = true;
@@ -92,25 +106,27 @@ class _CreateReportScreenState extends ConsumerState<CreateReportScreen> {
     });
 
     try {
-      final lat = double.parse(_latCtrl.text.trim());
-      final lng = double.parse(_lngCtrl.text.trim());
+      final lat = _latCtrl.text.trim().isNotEmpty
+          ? double.tryParse(_latCtrl.text.trim())
+          : null;
+      final lng = _lngCtrl.text.trim().isNotEmpty
+          ? double.tryParse(_lngCtrl.text.trim())
+          : null;
 
-      final report = await ref.read(reportRepositoryProvider).createReport(
+      final submissionId = await ref.read(reportRepositoryProvider).createReport(
+            categoryId: _selectedCategory!.id,
+            title: _titleCtrl.text.trim(),
             description: _descCtrl.text.trim(),
-            category: _category,
             latitude: lat,
             longitude: lng,
-            locationAddress: _addressCtrl.text.trim().isNotEmpty
+            addressText: _addressCtrl.text.trim().isNotEmpty
                 ? _addressCtrl.text.trim()
                 : null,
             photoPath: _photo?.path,
           );
 
-      // Invalidate list so it refreshes on return.
-      ref.invalidate(reportsProvider);
-
       if (mounted) {
-        context.go(AppRoutes.reportDetail(report.id));
+        context.go(AppRoutes.submissionTracking(submissionId));
       }
     } on AppException catch (e) {
       setState(() => _errorMessage = e.message);
@@ -123,132 +139,205 @@ class _CreateReportScreenState extends ConsumerState<CreateReportScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final categoriesAsync = ref.watch(categoriesProvider);
+    final primaryColor = Colors.blue.shade700;
+
+    InputDecoration inputDecoration(String label, IconData icon) {
+      return InputDecoration(
+        labelText: label,
+        prefixIcon: Icon(icon, color: primaryColor),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: Colors.grey.shade300),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: primaryColor, width: 2),
+        ),
+        filled: true,
+        fillColor: Colors.grey.shade50,
+      );
+    }
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Buat Laporan')),
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        iconTheme: IconThemeData(color: primaryColor),
+        title: const Text(
+          'Buat Laporan',
+          style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold),
+        ),
+      ),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(20),
           child: Form(
             key: _formKey,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // Category
-                DropdownButtonFormField<ReportCategory>(
-                  // ignore: deprecated_member_use
-                  value: _category,
-                  decoration: const InputDecoration(labelText: 'Kategori'),
-                  items: ReportCategory.values
-                      .map(
-                        // ignore: deprecated_member_use
-                        (c) => DropdownMenuItem(value: c, child: Text(c.label)),
-                      )
-                      .toList(),
-                  onChanged: (v) => setState(() => _category = v ?? _category),
+                // Category — loaded from API
+                categoriesAsync.when(
+                  loading: () => const LinearProgressIndicator(),
+                  error: (e, _) => Text(
+                    'Gagal memuat kategori: $e',
+                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  ),
+                  data: (categories) => DropdownButtonFormField<Category>(
+                    value: _selectedCategory,
+                    decoration: inputDecoration('Kategori', Icons.category_outlined),
+                    hint: const Text('Pilih kategori'),
+                    items: categories
+                        .map((c) => DropdownMenuItem(value: c, child: Text(c.name)))
+                        .toList(),
+                    onChanged: (v) => setState(() => _selectedCategory = v),
+                    validator: (v) => v == null ? 'Pilih kategori.' : null,
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Title
+                TextFormField(
+                  controller: _titleCtrl,
+                  decoration: inputDecoration('Judul laporan', Icons.title_outlined),
+                  validator: (v) {
+                    if (v == null || v.trim().isEmpty) return 'Judul tidak boleh kosong.';
+                    if (v.trim().length < 5) return 'Judul minimal 5 karakter.';
+                    return null;
+                  },
+                  textInputAction: TextInputAction.next,
                 ),
                 const SizedBox(height: 16),
 
                 // Description
                 TextFormField(
                   controller: _descCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Deskripsi masalah',
+                  decoration: inputDecoration('Deskripsi masalah', Icons.description_outlined).copyWith(
                     alignLabelWithHint: true,
                   ),
                   maxLines: 4,
-                  validator: (v) => (v == null || v.trim().isEmpty)
-                      ? 'Deskripsi tidak boleh kosong.'
-                      : null,
+                  validator: (v) {
+                    if (v == null || v.trim().isEmpty) return 'Deskripsi tidak boleh kosong.';
+                    if (v.trim().length < 20) return 'Deskripsi minimal 20 karakter.';
+                    return null;
+                  },
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 24),
 
-                // Location
-                Text('Lokasi', style: Theme.of(context).textTheme.titleSmall),
-                const SizedBox(height: 8),
+                // Location Section Header
+                Row(
+                  children: [
+                    Icon(Icons.location_on_outlined, color: primaryColor, size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Lokasi Kejadian',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black87,
+                          ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
                 Row(
                   children: [
                     Expanded(
                       child: TextFormField(
                         controller: _latCtrl,
-                        decoration: const InputDecoration(labelText: 'Lintang'),
+                        decoration: inputDecoration('Lintang', Icons.map_outlined),
                         keyboardType: const TextInputType.numberWithOptions(
                           decimal: true,
                           signed: true,
                         ),
-                        validator: (v) {
-                          if (v == null || v.trim().isEmpty) {
-                            return 'Wajib diisi.';
-                          }
-                          if (double.tryParse(v.trim()) == null) {
-                            return 'Angka tidak valid.';
-                          }
-                          return null;
-                        },
                       ),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
                       child: TextFormField(
                         controller: _lngCtrl,
-                        decoration: const InputDecoration(labelText: 'Bujur'),
+                        decoration: inputDecoration('Bujur', Icons.map_outlined),
                         keyboardType: const TextInputType.numberWithOptions(
                           decimal: true,
                           signed: true,
                         ),
-                        validator: (v) {
-                          if (v == null || v.trim().isEmpty) {
-                            return 'Wajib diisi.';
-                          }
-                          if (double.tryParse(v.trim()) == null) {
-                            return 'Angka tidak valid.';
-                          }
-                          return null;
-                        },
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    _locationLoading
-                        ? const SizedBox(
-                            width: 36,
-                            height: 36,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : IconButton(
-                            icon: const Icon(Icons.my_location),
-                            tooltip: 'Gunakan lokasi saat ini',
-                            onPressed: _detectLocation,
+                    const SizedBox(width: 12),
+                    SizedBox(
+                      height: 56,
+                      width: 56,
+                      child: IconButton.filled(
+                        style: IconButton.styleFrom(
+                          backgroundColor: Colors.blue.shade50,
+                          foregroundColor: primaryColor,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            side: BorderSide(color: Colors.blue.shade200),
                           ),
+                        ),
+                        onPressed: _locationLoading ? null : _detectLocation,
+                        tooltip: 'Gunakan lokasi saat ini',
+                        icon: _locationLoading
+                            ? SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: primaryColor,
+                                ),
+                              )
+                            : Icon(Icons.my_location, color: primaryColor),
+                      ),
+                    ),
                   ],
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 16),
                 TextFormField(
                   controller: _addressCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Nama lokasi / alamat (opsional)',
-                  ),
+                  decoration: inputDecoration('Nama lokasi / alamat (opsional)', Icons.place_outlined),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 24),
 
-                // Photo
-                Text('Foto (opsional)', style: Theme.of(context).textTheme.titleSmall),
-                const SizedBox(height: 8),
+                // Photo Section Header
+                Row(
+                  children: [
+                    Icon(Icons.camera_alt_outlined, color: primaryColor, size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Foto Bukti (opsional)',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black87,
+                          ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
                 if (_photo != null)
                   Stack(
                     children: [
                       ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: BorderRadius.circular(12),
                         child: Image.file(
                           File(_photo!.path),
-                          height: 160,
+                          height: 180,
                           width: double.infinity,
                           fit: BoxFit.cover,
                         ),
                       ),
                       Positioned(
-                        top: 4,
-                        right: 4,
+                        top: 8,
+                        right: 8,
                         child: IconButton.filled(
-                          icon: const Icon(Icons.close),
+                          style: IconButton.styleFrom(
+                            backgroundColor: Colors.black.withOpacity(0.6),
+                          ),
+                          icon: const Icon(Icons.close, color: Colors.white),
                           onPressed: () => setState(() => _photo = null),
                           tooltip: 'Hapus foto',
                         ),
@@ -258,38 +347,91 @@ class _CreateReportScreenState extends ConsumerState<CreateReportScreen> {
                 else
                   Row(
                     children: [
-                      OutlinedButton.icon(
-                        onPressed: () => _pickPhoto(ImageSource.camera),
-                        icon: const Icon(Icons.camera_alt_outlined),
-                        label: const Text('Kamera'),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: primaryColor,
+                            side: BorderSide(color: Colors.blue.shade300),
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          onPressed: () => _pickPhoto(ImageSource.camera),
+                          icon: const Icon(Icons.camera_alt_outlined),
+                          label: const Text('Kamera'),
+                        ),
                       ),
                       const SizedBox(width: 12),
-                      OutlinedButton.icon(
-                        onPressed: () => _pickPhoto(ImageSource.gallery),
-                        icon: const Icon(Icons.photo_library_outlined),
-                        label: const Text('Galeri'),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: primaryColor,
+                            side: BorderSide(color: Colors.blue.shade300),
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          onPressed: () => _pickPhoto(ImageSource.gallery),
+                          icon: const Icon(Icons.photo_library_outlined),
+                          label: const Text('Galeri'),
+                        ),
                       ),
                     ],
                   ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 28),
 
+                // Error Message Card
                 if (_errorMessage != null) ...[
-                  Text(
-                    _errorMessage!,
-                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.red.shade200),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.error_outline, color: Colors.red, size: 20),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _errorMessage!,
+                            style: TextStyle(color: Colors.red.shade700, fontSize: 13),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 16),
                 ],
 
-                FilledButton(
-                  onPressed: _submitting ? null : _submit,
-                  child: _submitting
-                      ? const SizedBox(
-                          height: 20,
-                          width: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('Kirim Laporan'),
+                // Submit Button
+                SizedBox(
+                  height: 50,
+                  child: FilledButton(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: primaryColor,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: _submitting ? null : _submit,
+                    child: _submitting
+                        ? const SizedBox(
+                            height: 20,
+                            width: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Text(
+                            'Kirim Laporan',
+                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                          ),
+                  ),
                 ),
               ],
             ),

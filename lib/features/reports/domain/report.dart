@@ -1,20 +1,24 @@
 import 'package:equatable/equatable.dart';
 
-/// Canonical status values — confirm with backend.
+/// Status values from the API.
 enum ReportStatus {
   submitted,
-  underReview,
+  accepted,
   inProgress,
-  resolved,
+  resolvedPendingVerification,
+  verified,
+  reopened,
   rejected,
   unknown;
 
   static ReportStatus fromString(String? value) {
     return switch (value) {
       'submitted' => submitted,
-      'under_review' => underReview,
+      'accepted' => accepted,
       'in_progress' => inProgress,
-      'resolved' => resolved,
+      'resolved_pending_verification' => resolvedPendingVerification,
+      'verified' => verified,
+      'reopened' => reopened,
       'rejected' => rejected,
       _ => unknown,
     };
@@ -22,55 +26,19 @@ enum ReportStatus {
 
   String get label => switch (this) {
         submitted => 'Dikirim',
-        underReview => 'Ditinjau',
+        accepted => 'Diterima',
         inProgress => 'Diproses',
-        resolved => 'Selesai',
+        resolvedPendingVerification => 'Menunggu Verifikasi',
+        verified => 'Terverifikasi',
+        reopened => 'Dibuka Kembali',
         rejected => 'Ditolak',
         unknown => 'Tidak diketahui',
       };
+
+  bool get isResolved => this == verified;
 }
 
-/// Canonical category values — confirm with backend.
-enum ReportCategory {
-  roadDamage,
-  waste,
-  drainage,
-  streetlight,
-  publicFacility,
-  other;
-
-  static ReportCategory fromString(String? value) {
-    return switch (value) {
-      'road_damage' => roadDamage,
-      'waste' => waste,
-      'drainage' => drainage,
-      'streetlight' => streetlight,
-      'public_facility' => publicFacility,
-      _ => other,
-    };
-  }
-
-  String get label => switch (this) {
-        roadDamage => 'Jalan Rusak',
-        waste => 'Sampah',
-        drainage => 'Drainase',
-        streetlight => 'Lampu Jalan',
-        publicFacility => 'Fasilitas Umum',
-        other => 'Lainnya',
-      };
-
-  /// The string key expected by the backend.
-  String get apiValue => switch (this) {
-        roadDamage => 'road_damage',
-        waste => 'waste',
-        drainage => 'drainage',
-        streetlight => 'streetlight',
-        publicFacility => 'public_facility',
-        other => 'other',
-      };
-}
-
-/// A single entry in the report timeline (status update from staff).
+/// A single entry in the report timeline (status history).
 class TimelineEntry extends Equatable {
   const TimelineEntry({
     required this.status,
@@ -83,8 +51,10 @@ class TimelineEntry extends Equatable {
   final DateTime createdAt;
 
   factory TimelineEntry.fromJson(Map<String, dynamic> json) {
+    // status_history entries use new_status; fall back to status for compatibility.
+    final statusStr = json['new_status']?.toString() ?? json['status']?.toString();
     return TimelineEntry(
-      status: ReportStatus.fromString(json['status']?.toString()),
+      status: ReportStatus.fromString(statusStr),
       note: json['note']?.toString() ?? '',
       createdAt: DateTime.tryParse(json['created_at']?.toString() ?? '') ?? DateTime.now(),
     );
@@ -94,62 +64,102 @@ class TimelineEntry extends Equatable {
   List<Object?> get props => [status, note, createdAt];
 }
 
-/// Domain model for a citizen report.
+/// Attachment from `ReportResource.attachments`.
+class ReportAttachment extends Equatable {
+  const ReportAttachment({
+    required this.id,
+    required this.url,
+    this.mimeType = 'image/jpeg',
+  });
+
+  final int id;
+  final String url;
+  final String mimeType;
+
+  factory ReportAttachment.fromJson(Map<String, dynamic> json) {
+    return ReportAttachment(
+      id: int.tryParse(json['id']?.toString() ?? '') ?? 0,
+      url: json['url']?.toString() ?? '',
+      mimeType: json['mime_type']?.toString() ?? 'image/jpeg',
+    );
+  }
+
+  @override
+  List<Object?> get props => [id, url];
+}
+
+/// Domain model for an official report (`ReportResource`).
 class Report extends Equatable {
   const Report({
     required this.id,
     required this.title,
     required this.description,
-    required this.category,
+    required this.categoryName,
     required this.status,
     required this.createdAt,
-    this.photoUrls = const [],
+    this.publicCode = '',
+    this.attachments = const [],
     this.latitude,
     this.longitude,
-    this.locationAddress,
+    this.addressText,
     this.timeline = const [],
   });
 
-  final String id;
+  final int id;
+  final String publicCode;
   final String title;
   final String description;
-  final ReportCategory category;
+  final String categoryName;
   final ReportStatus status;
   final DateTime createdAt;
-  final List<String> photoUrls;
+  final List<ReportAttachment> attachments;
   final double? latitude;
   final double? longitude;
-  final String? locationAddress;
+  final String? addressText;
   final List<TimelineEntry> timeline;
 
   factory Report.fromJson(Map<String, dynamic> json) {
-    final rawTimeline = json['timeline'];
+    // Unwrap {"data": {...}} if present
+    final raw = (json['data'] is Map ? json['data'] : json) as Map<String, dynamic>;
+
+    final categoryObj = raw['category'];
+    final categoryName = categoryObj is Map
+        ? categoryObj['name']?.toString() ?? ''
+        : raw['category_name']?.toString() ?? '';
+
+    // Field is status_history in ReportResource (detail endpoint).
+    final rawTimeline = raw['status_history'] ?? raw['timeline'];
     final timeline = rawTimeline is List
-        ? rawTimeline
-            .whereType<Map<String, dynamic>>()
-            .map(TimelineEntry.fromJson)
-            .toList()
+        ? rawTimeline.whereType<Map<String, dynamic>>().map(TimelineEntry.fromJson).toList()
         : <TimelineEntry>[];
 
-    final rawPhotos = json['photo_urls'];
-    final photoUrls = rawPhotos is List
-        ? rawPhotos.map((e) => e.toString()).toList()
-        : <String>[];
+    final rawAttachments = raw['attachments'];
+    final attachments = rawAttachments is List
+        ? rawAttachments.whereType<Map<String, dynamic>>().map(ReportAttachment.fromJson).toList()
+        : <ReportAttachment>[];
 
     return Report(
-      id: json['id']?.toString() ?? '',
-      title: json['title']?.toString() ?? '',
-      description: json['description']?.toString() ?? '',
-      category: ReportCategory.fromString(json['category']?.toString()),
-      status: ReportStatus.fromString(json['status']?.toString()),
-      createdAt: DateTime.tryParse(json['created_at']?.toString() ?? '') ?? DateTime.now(),
-      photoUrls: photoUrls,
-      latitude: (json['latitude'] as num?)?.toDouble(),
-      longitude: (json['longitude'] as num?)?.toDouble(),
-      locationAddress: json['location_address']?.toString(),
+      id: _parseInt(raw['id']) ?? 0,
+      publicCode: raw['public_code']?.toString() ?? '',
+      title: raw['title']?.toString() ?? '',
+      description: raw['description']?.toString() ?? '',
+      categoryName: categoryName,
+      status: ReportStatus.fromString(raw['status']?.toString()),
+      createdAt: DateTime.tryParse(raw['created_at']?.toString() ?? '') ?? DateTime.now(),
+      attachments: attachments,
+      latitude: _parseDouble(raw['location']?['latitude']) ?? _parseDouble(raw['latitude']),
+      longitude: _parseDouble(raw['location']?['longitude']) ?? _parseDouble(raw['longitude']),
+      addressText: raw['location']?['address_text']?.toString()
+          ?? raw['address_text']?.toString(),
       timeline: timeline,
     );
   }
+
+  static int? _parseInt(dynamic v) =>
+      v == null ? null : int.tryParse(v.toString());
+
+  static double? _parseDouble(dynamic v) =>
+      v == null ? null : double.tryParse(v.toString());
 
   @override
   List<Object?> get props => [id, status, title];

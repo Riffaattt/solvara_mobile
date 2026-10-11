@@ -9,6 +9,7 @@ import 'package:hackathon_salvara/features/reports/presentation/create_report_sc
 import 'package:hackathon_salvara/features/reports/presentation/feedback_screen.dart';
 import 'package:hackathon_salvara/features/reports/presentation/report_detail_screen.dart';
 import 'package:hackathon_salvara/features/reports/presentation/reports_screen.dart';
+import 'package:hackathon_salvara/features/reports/presentation/submission_tracking_screen.dart';
 
 /// Named route paths.
 abstract final class AppRoutes {
@@ -19,6 +20,7 @@ abstract final class AppRoutes {
   static const createReport = '/reports/create';
   static String reportDetail(String id) => '/reports/$id';
   static String feedback(String id) => '/reports/$id/feedback';
+  static String submissionTracking(String id) => '/submissions/$id';
 }
 
 /// Builds the [GoRouter] with auth redirect logic.
@@ -29,19 +31,26 @@ GoRouter buildRouter(Ref ref) {
     redirect: (context, state) {
       final authAsync = ref.read(authStateProvider);
 
-      // Still loading — stay on splash.
-      if (authAsync.isLoading) return AppRoutes.splash;
+      // Still loading — don't redirect, stay on current route (splash).
+      // Returning AppRoutes.splash here causes an infinite redirect loop.
+      if (authAsync.isLoading) return null;
 
       // Error state (network down at startup) → treat as unauthenticated.
       final auth = authAsync.valueOrNull ??
           const AuthState(status: AuthStatus.unauthenticated);
 
-      final onAuth = state.matchedLocation == AppRoutes.login ||
-          state.matchedLocation == AppRoutes.register ||
-          state.matchedLocation == AppRoutes.splash;
+      final onSplash = state.matchedLocation == AppRoutes.splash;
+      final onAuthPage = state.matchedLocation == AppRoutes.login ||
+          state.matchedLocation == AppRoutes.register;
 
-      if (!auth.isAuthenticated && !onAuth) return AppRoutes.login;
-      if (auth.isAuthenticated && onAuth) return AppRoutes.reports;
+      // Always leave splash once auth resolves.
+      if (onSplash) {
+        return auth.isAuthenticated ? AppRoutes.reports : AppRoutes.login;
+      }
+      // Redirect away from login/register if already authenticated.
+      if (auth.isAuthenticated && onAuthPage) return AppRoutes.reports;
+      // Redirect to login if unauthenticated and on a protected route.
+      if (!auth.isAuthenticated && !onAuthPage) return AppRoutes.login;
       return null;
     },
     routes: [
@@ -60,6 +69,11 @@ GoRouter buildRouter(Ref ref) {
                 FeedbackScreen(reportId: st.pathParameters['id']!),
           ),
         ],
+      ),
+      GoRoute(
+        path: '/submissions/:id',
+        builder: (ctx, st) =>
+            SubmissionTrackingScreen(submissionId: st.pathParameters['id']!),
       ),
     ],
   );

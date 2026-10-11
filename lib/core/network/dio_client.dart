@@ -2,22 +2,33 @@ import 'package:dio/dio.dart';
 import 'package:hackathon_salvara/core/errors/app_exception.dart';
 import 'package:hackathon_salvara/core/storage/token_storage.dart';
 
-/// Base URL for the Laravel backend.
-/// Set via `--dart-define=API_BASE_URL=https://...` at build time.
-const String _kDefaultBaseUrl = 'http://10.0.2.2:8000'; // Android emulator localhost
+/// Base URL for the Laravel backend (without trailing slash).
+/// Override at build/run time: `--dart-define=API_BASE_URL=https://your-ngrok-url`
+const String _kDefaultBaseUrl = 'https://a321-2402-8780-106a-28a5-85fd-2a5c-49d2-970f.ngrok-free.app';
+
+/// All citizen endpoints live under /api/v1.
+/// Trailing slash is required: Dio resolves relative paths against it.
+const String _kApiPrefix = '/api/v1/';
 
 /// Creates and configures the shared [Dio] instance.
 Dio buildDioClient(TokenStorage tokenStorage) {
+  final base = const String.fromEnvironment('API_BASE_URL', defaultValue: _kDefaultBaseUrl);
   final dio = Dio(
     BaseOptions(
-      baseUrl: const String.fromEnvironment('API_BASE_URL', defaultValue: _kDefaultBaseUrl),
+      baseUrl: '$base$_kApiPrefix',
       connectTimeout: const Duration(seconds: 10),
       receiveTimeout: const Duration(seconds: 20),
-      headers: {'Accept': 'application/json'},
+      headers: {
+        'Accept': 'application/json',
+        // Prevents ngrok from returning its browser-warning HTML page.
+        'ngrok-skip-browser-warning': 'true',
+      },
     ),
   );
 
   dio.interceptors.add(_AuthInterceptor(tokenStorage));
+  // shortcut: remove LogInterceptor before production build
+  dio.interceptors.add(LogInterceptor(requestBody: true, responseBody: true));
   return dio;
 }
 
@@ -72,23 +83,37 @@ AppException dioToAppException(DioException e) {
     return const NetworkException('Tidak dapat terhubung ke server. Periksa koneksi internet Anda.');
   }
 
-  if (statusCode == 422) {
+  if (statusCode == 422 || statusCode == 400) {
     final data = e.response?.data;
     final errors = <String, List<String>>{};
-    if (data is Map && data['errors'] is Map) {
-      (data['errors'] as Map).forEach((k, v) {
-        if (v is List) errors[k.toString()] = v.map((e) => e.toString()).toList();
+    // Backend envelope: {"error": {"code": "...", "message": "...", "fields": {...}}}
+    final errorObj = data is Map ? data['error'] : null;
+    if (errorObj is Map && errorObj['fields'] is Map) {
+      (errorObj['fields'] as Map).forEach((k, v) {
+        if (v is List) {
+          errors[k.toString()] = v.map((e) => e.toString()).toList();
+        } else {
+          errors[k.toString()] = [v.toString()];
+        }
       });
     }
-    final message = (data is Map ? data['message']?.toString() : null) ?? 'Data tidak valid.';
+    final message = (errorObj is Map ? errorObj['message']?.toString() : null) ?? 'Data tidak valid.';
     return ValidationException(message, errors: errors);
   }
 
+  // Extract message from backend envelope for any other error status.
+  final data = e.response?.data;
+  final errorObj = data is Map ? data['error'] : null;
+  final serverMessage = errorObj is Map ? errorObj['message']?.toString() : null;
+
   if (statusCode != null && statusCode >= 500) {
-    return NetworkException('Server bermasalah (kode $statusCode). Coba lagi nanti.', statusCode: statusCode);
+    return NetworkException(
+      serverMessage ?? 'Server bermasalah (kode $statusCode). Coba lagi nanti.',
+      statusCode: statusCode,
+    );
   }
 
   return UnknownException(
-    e.message ?? 'Terjadi kesalahan yang tidak diketahui.',
+    serverMessage ?? e.message ?? 'Terjadi kesalahan yang tidak diketahui.',
   );
 }

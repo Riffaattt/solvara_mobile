@@ -6,13 +6,14 @@ abstract interface class ReportRepository {
 
   Future<Report> getReport(String id);
 
-  /// Creates a new report. [photoPath] is an optional local file path.
-  Future<Report> createReport({
+  /// Creates a new submission. Returns submission_id for polling.
+  Future<String> createReport({
+    required int categoryId,
+    required String title,
     required String description,
-    required ReportCategory category,
-    required double latitude,
-    required double longitude,
-    String? locationAddress,
+    double? latitude,
+    double? longitude,
+    String? addressText,
     String? photoPath,
   });
 
